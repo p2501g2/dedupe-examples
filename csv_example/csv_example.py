@@ -20,7 +20,7 @@ import csv
 import re
 import logging
 import optparse
-
+import time
 import dedupe
 from unidecode import unidecode
 
@@ -35,7 +35,7 @@ optp.add_option('-v', '--verbose', dest='verbose', action='count',
                 help='Increase verbosity (specify multiple times for more)'
                 )
 (opts, args) = optp.parse_args()
-log_level = logging.WARNING 
+log_level = logging.WARNING
 if opts.verbose:
     if opts.verbose == 1:
         log_level = logging.INFO
@@ -70,7 +70,7 @@ def preProcess(column):
 
 def readData(filename):
     """
-    Read in our data from a CSV file and create a dictionary of records, 
+    Read in our data from a CSV file and create a dictionary of records,
     where the key is a unique record ID and each value is dict
     """
 
@@ -84,14 +84,23 @@ def readData(filename):
 
     return data_d
 
+start_time = time.time()
+
 print('importing data ...')
 data_d = readData(input_file)
+
+data_iot = time.time() - start_time
+print 'creating data dictionary -- {0} seconds'.format(data_iot)
 
 # If a settings file already exists, we'll just load that and skip training
 if os.path.exists(settings_file):
     print('reading from', settings_file)
+
     with open(settings_file, 'rb') as f:
+        settings_time_start = time.time()
         deduper = dedupe.StaticDedupe(f)
+        settings_time = time.time() - settings_time_start
+        print 'creating deduper from settings file -- {0} seconds'.format(settings_time)
 else:
     # ## Training
 
@@ -102,6 +111,8 @@ else:
         {'field' : 'Zip', 'type': 'Exact', 'has missing' : True},
         {'field' : 'Phone', 'type': 'String', 'has missing' : True},
         ]
+    # Timing variables
+    training_setup_start = time.time()
 
     # Create a new deduper object and pass our data model to it.
     deduper = dedupe.Dedupe(fields)
@@ -109,14 +120,31 @@ else:
     # To train dedupe, we feed it a sample of records.
     deduper.sample(data_d, 15000)
 
+    # Timing variables
+    training_setup_time = time.time() - training_setup_start
+    print 'training setup (dedupe instantiate and sample) -- {0} seconds'.format(training_setup_time)
+    settings_time = training_setup_time
+
+
     # If we have training data saved from a previous run of dedupe,
     # look for it and load it in.
     # __Note:__ if you want to train from scratch, delete the training_file
     if os.path.exists(training_file):
         print('reading labeled examples from ', training_file)
+
+        # Timing variables
+        read_training_time_start = time.time()
+
         with open(training_file, 'rb') as f:
             deduper.readTraining(f)
 
+            # Timing variables
+            settings_time += time.time() - read_training_time_start
+            print 'reading from training file -- {0} seconds'.format(time.time() - read_training_time_start)
+
+
+    # Timing variables
+    active_learning_start = time.time()
     # ## Active learning
     # Dedupe will find the next pair of records
     # it is least certain about and ask you to label them as duplicates
@@ -124,8 +152,11 @@ else:
     # use 'y', 'n' and 'u' keys to flag duplicates
     # press 'f' when you are finished
     print('starting active labeling...')
-
     dedupe.consoleLabel(deduper)
+
+    # Timing variables
+    labeling_time = time.time() - active_learning_start
+    train_start_time = time.time()
 
     # Using the examples we just labeled, train the deduper and learn
     # blocking predicates
@@ -140,11 +171,19 @@ else:
     # this file.
     with open(settings_file, 'wb') as sf:
         deduper.writeSettings(sf)
-        
+
+    # Timing variables
+    training_time = time.time() - train_start_time
+    print 'training time -- {0} seconds'.format(training_time)
+    settings_time += training_time
+
+# Timing variables
+clustering_time_start = time.time()
+
 # Find the threshold that will maximize a weighted average of our
 # precision and recall.  When we set the recall weight to 2, we are
 # saying we care twice as much about recall as we do precision.
-#
+
 # If we had more data, we would not pass in all the blocked data into
 # this function but a representative sample.
 
@@ -158,12 +197,16 @@ threshold = deduper.threshold(data_d, recall_weight=1)
 print('clustering...')
 clustered_dupes = deduper.match(data_d, threshold)
 
+# Timing variables
+clustering_time = time.time() - clustering_time_start
+print 'clustering/thresholding -- {0} seconds'.format(clustering_time)
 print('# duplicate sets', len(clustered_dupes))
 
 # ## Writing Results
 
-# Write our original data back out to a CSV with a new column called 
+# Write our original data back out to a CSV with a new column called
 # 'Cluster ID' which indicates which records refer to each other.
+writing_results_start_time = time.time()
 
 cluster_membership = {}
 cluster_id = 0
@@ -209,3 +252,16 @@ with open(output_file, 'w') as f_output, open(input_file) as f_input:
             for key in canonical_keys:
                 row.append(None)
         writer.writerow(row)
+
+# Timing variables
+writing_results_time = time.time() - writing_results_start_time
+
+total_time = time.time() - start_time
+print 'Total process time w/ learning -- {0} seconds'.format(total_time)
+
+algorithmic_total = writing_results_time + clustering_time + settings_time + data_iot
+
+print 'algorithm time (exclusing active labeling) -- {0} seconds'.format(algorithmic_total)
+
+print 'sanity check timings, {0} seconds calculated for learning'.format(total_time - algorithmic_total)
+print 'and {0} seconds recorded for learning'.format(labeling_time)

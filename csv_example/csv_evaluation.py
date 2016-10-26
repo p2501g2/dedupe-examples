@@ -31,7 +31,7 @@ def dupePairs(filename, rowname) :
         del dupe_d['x']
 
     dupe_s = set([])
-    for (unique_id, cluster) in viewitems(dupe_d) :
+    for (unique_id, cluster) in viewitems(dupe_d) : #e2 dupe_d.viewitems():
         if len(cluster) > 1:
             for pair in itertools.combinations(cluster, 2):
                 dupe_s.add(frozenset(pair))
@@ -45,4 +45,3 @@ true_dupes = dupePairs(manual_clusters, 'True Id')
 test_dupes = dupePairs(dedupe_clusters, 'Cluster ID')
 
 evaluateDuplicates(test_dupes, true_dupes)
-
